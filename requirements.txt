@@ -1,12 +1,8 @@
 fastapi
 uvicorn[standard]
 numpy
-librosa
-tensorflow
-tensorflow-hub
+pillow
+requests
+transformers
 torch
 torchvision
-transformers
-pillow
-matplotlib
-requests
