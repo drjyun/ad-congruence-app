@@ -1,2 +1,12 @@
-streamlit
+fastapi
+uvicorn[standard]
+numpy
+librosa
+tensorflow
+tensorflow-hub
+torch
+torchvision
+transformers
+pillow
+matplotlib
 requests
