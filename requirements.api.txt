@@ -8,7 +8,7 @@ pillow==10.4.0
 protobuf==3.20.3
 
 # Deep learning
-tensorflow==2.13.1
+tensorflow==2.15.0
 tensorflow-hub==0.16.1
 numpy==1.24.3
 matplotlib==3.9.2
