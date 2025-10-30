@@ -1,14 +1,33 @@
 FROM python:3.10-slim
 
+# 1. Install system libs (ffmpeg for audio extraction, libsndfile for librosa)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
 
-ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# 2. Environment hygiene
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
+# 3. Install Python deps
 COPY requirements.api.txt .
 RUN pip install --upgrade pip && pip install -r requirements.api.txt
 
+# 4. Copy the app code
 COPY . .
-ENV PORT=8000
-CMD ["bash","-lc","uvicorn ad_context_congruence_api_fast_api_backend:app --host 0.0.0.0 --port $PORT"]
+
+# 5. Thread + cache limits (prevents OOM on Render)
+ENV PORT=8000 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    TF_NUM_INTRAOP_THREADS=1 \
+    TF_NUM_INTEROP_THREADS=1 \
+    TRANSFORMERS_CACHE=/app/.hf_cache \
+    TFHUB_CACHE_DIR=/app/.tfhub_cache
+
+# 6. Run the FastAPI app with uvicorn (matches your main file)
+CMD ["bash", "-lc", "uvicorn ad_context_api:app --host 0.0.0.0 --port $PORT"]
