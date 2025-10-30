@@ -203,6 +203,174 @@ def root():
         "docs": "https://ad-congruence-api.onrender.com/docs"
     }
 
+from fastapi import HTTPException, Query
+from fastapi.responses import JSONResponse
+
+@app.post("/score/{ad_id}")
+def score_ad(ad_id: str, include_audio: bool = True, include_visual: bool = True):
+    """Compute audio + visual congruence for an uploaded ad across all shows."""
+    ad_dir = os.path.join(UPLOAD_ROOT, ad_id)
+    if not os.path.isdir(ad_dir):
+        raise HTTPException(404, "Unknown ad_id.")
+
+    vids = [p for p in glob.glob(os.path.join(ad_dir, "*"))
+            if p.lower().endswith((".mp4", ".mov", ".mkv"))]
+    if not vids:
+        raise HTTPException(400, "No video found for this ad_id.")
+    video_path = vids[0]
+
+    result = {
+        "ad_id": ad_id,
+        "window_sec": WINDOW_SEC,
+        "step_sec": STEP_SEC,
+        "chunk_dur": SAMPLE_SEC,
+        "shows": {}
+    }
+
+    # AUDIO
+    if include_audio:
+        try:
+            wav_path = os.path.join(ad_dir, "audio.wav")
+            if not os.path.exists(wav_path):
+                extract_audio_wav(video_path, wav_path)
+            ad_audio = vggish_embeddings(wav_path)                   # (T, 128)
+            ctx_audio = load_context_avg_arrays("audio")             # dict[show] -> [seg1, seg2]
+            for show, segs in ctx_audio.items():
+                A = sliding_congruence(segs, ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+                result["shows"].setdefault(show, {})["audio"] = A.tolist()
+        except Exception as e:
+            raise HTTPException(500, f"Audio scoring error: {e}")
+
+    # VISUAL
+    if include_visual:
+        try:
+            frames_dir = os.path.join(ad_dir, "frames")
+            if not (os.path.exists(frames_dir) and glob.glob(os.path.join(frames_dir, "frame_*.jpg"))):
+                sample_frames(video_path, frames_dir, SAMPLE_SEC)
+            ad_vis = vit_embeddings_from_frames(frames_dir)          # (T, 768)
+            ctx_vis = load_context_avg_arrays("visual")              # dict[show] -> [seg1, seg2]
+            for show, segs in ctx_vis.items():
+                V = sliding_congruence(segs, ad_vis, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+                result["shows"].setdefault(show, {})["visual"] = V.tolist()
+        except Exception as e:
+            raise HTTPException(500, f"Visual scoring error: {e}")
+
+    return JSONResponse(result)
+
+
+@app.get("/plot_both/{ad_id}")
+def plot_both(
+    ad_id: str,
+    show: str = Query(..., description="Context show name, e.g., CNN"),
+    agg: str  = Query("ad_time", pattern="^(ad_time|tv_time)$"),
+):
+    """Returns a PNG with audio (top) and visual (bottom) congruence curves."""
+    import io, math
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from fastapi.responses import StreamingResponse
+
+    ad_dir = os.path.join(UPLOAD_ROOT, ad_id)
+    vids = [p for p in glob.glob(os.path.join(ad_dir, "*"))
+            if p.lower().endswith((".mp4",".mov",".mkv"))]
+    if not vids:
+        raise HTTPException(400, "No video found for this ad_id.")
+    video_path = vids[0]
+
+    # AUDIO arrays
+    wav_path = os.path.join(ad_dir, "audio.wav")
+    if not os.path.exists(wav_path):
+        extract_audio_wav(video_path, wav_path)
+    ad_audio = vggish_embeddings(wav_path)
+    ctx_audio = load_context_avg_arrays("audio")
+    if show not in ctx_audio:
+        raise HTTPException(404, f"Show '{show}' not found in audio contexts.")
+    rows_a = sliding_congruence(ctx_audio[show], ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+
+    # VISUAL arrays
+    frames_dir = os.path.join(ad_dir, "frames")
+    if not (os.path.exists(frames_dir) and glob.glob(os.path.join(frames_dir, "frame_*.jpg"))):
+        sample_frames(video_path, frames_dir, SAMPLE_SEC)
+    ad_vis = vit_embeddings_from_frames(frames_dir)
+    ctx_vis = load_context_avg_arrays("visual")
+    if show not in ctx_vis:
+        raise HTTPException(404, f"Show '{show}' not found in visual contexts.")
+    rows_v = sliding_congruence(ctx_vis[show], ad_vis, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+
+    def agg_curve(rows, which):
+        tv_t0, ad_t0, z = rows[:,0], rows[:,1], rows[:,2]
+        if which == "ad_time":
+            xs = sorted(set(ad_t0)); xlabel = "Ad time (s)"
+            vals = [z[ad_t0 == t] for t in xs]
+        else:
+            xs = sorted(set(tv_t0)); xlabel = "TV context time (s)"
+            vals = [z[tv_t0 == t] for t in xs]
+        means = [float(np.mean(v)) for v in vals]
+        cis   = [1.96 * float(np.std(v, ddof=1) / max(np.sqrt(len(v)), 1)) for v in vals]
+        return xs, means, cis, xlabel
+
+    xa, ma, cia, xlabel = agg_curve(rows_a, agg)
+    xv, mv, civ, _      = agg_curve(rows_v, agg)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=False)
+    for ax, x, m, ci, title in [
+        (axes[0], xa, ma, cia, f"{show} – audio congruence ({agg})"),
+        (axes[1], xv, mv, civ, f"{show} – visual congruence ({agg})"),
+    ]:
+        ax.plot(x, m, linewidth=2)
+        ax.fill_between(x, np.array(m)-np.array(ci), np.array(m)+np.array(ci), alpha=0.2)
+        ax.set_title(title); ax.set_xlabel(xlabel); ax.grid(True, alpha=.3)
+
+    import io
+    buf = io.BytesIO()
+    fig.tight_layout(); fig.savefig(buf, format="png", dpi=150); buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
+@app.get("/rank/{ad_id}")
+def rank_ad(
+    ad_id: str,
+    combine: str = Query("mean", pattern="^(mean|audio|visual)$")
+):
+    """Return per-show mean Fisher-z scores and a ranking."""
+    ad_dir = os.path.join(UPLOAD_ROOT, ad_id)
+    vids = [p for p in glob.glob(os.path.join(ad_dir, "*"))
+            if p.lower().endswith((".mp4",".mov",".mkv"))]
+    if not vids:
+        raise HTTPException(400, "No video found for this ad_id.")
+    video_path = vids[0]
+
+    # AUDIO
+    wav_path = os.path.join(ad_dir, "audio.wav")
+    if not os.path.exists(wav_path):
+        extract_audio_wav(video_path, wav_path)
+    ad_audio = vggish_embeddings(wav_path)
+    ctx_audio = load_context_avg_arrays("audio")
+
+    # VISUAL
+    frames_dir = os.path.join(ad_dir, "frames")
+    if not (os.path.exists(frames_dir) and glob.glob(os.path.join(frames_dir, "frame_*.jpg"))):
+        sample_frames(video_path, frames_dir, SAMPLE_SEC)
+    ad_vis = vit_embeddings_from_frames(frames_dir)
+    ctx_vis = load_context_avg_arrays("visual")
+
+    out = {}
+    for show in CONTEXT_SHOWS:
+        if show not in ctx_audio or show not in ctx_vis:
+            continue
+        Ra = sliding_congruence(ctx_audio[show], ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+        Rv = sliding_congruence(ctx_vis[show],   ad_vis,   WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+        mean_a = float(np.mean(Ra[:,2])) if Ra.size else float("nan")
+        mean_v = float(np.mean(Rv[:,2])) if Rv.size else float("nan")
+        score  = mean_a if combine=="audio" else mean_v if combine=="visual" else float(np.nanmean([mean_a, mean_v]))
+        out[show] = {"audio": mean_a, "visual": mean_v, "combined": score}
+
+    key = {"mean":"combined","audio":"audio","visual":"visual"}[combine]
+    ranking = sorted(out.items(), key=lambda kv: kv[1][key], reverse=True)
+    return {"ad_id": ad_id, "metric": key, "ranking": [{"show": s, **m} for s,m in ranking]}
+
+
 if __name__=="__main__":
     import uvicorn
     uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT",8000)))
