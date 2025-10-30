@@ -1,12 +1,25 @@
-# Use TensorFlow base image (already has TensorFlow + dependencies)
-FROM tensorflow/tensorflow:2.15.0-py3
+# Use Python base with optimized package installation
+FROM python:3.10-slim
 
-# Install PyTorch and other ML libraries (faster than from scratch)
+# Install system packages first (for caching)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TensorFlow FIRST (biggest package - ~500MB)
+RUN pip install --no-cache-dir tensorflow==2.15.0
+
+# Install PyTorch (second biggest - CPU-only version is much smaller)
 RUN pip install --no-cache-dir \
     torch==2.2.2 \
     torchvision==0.17.2 \
-    transformers==4.44.2 \
     --index-url https://download.pytorch.org/whl/cpu
+
+# Install TensorFlow Hub and Transformers
+RUN pip install --no-cache-dir \
+    tensorflow-hub==0.16.1 \
+    transformers==4.44.2
 
 # Install remaining lightweight packages
 RUN pip install --no-cache-dir \
@@ -18,12 +31,6 @@ RUN pip install --no-cache-dir \
     pillow==10.4.0 \
     requests==2.32.3
 
-# Install system packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Copy only necessary files (exclude large files)
@@ -31,10 +38,13 @@ COPY app.py requirements.txt ./
 COPY audio/ ./audio/
 COPY visual/ ./visual/
 
-ENV PORT=8080 \
-    PYTHONUNBUFFERED=1
+# Set environment variables
+ENV PORT=7860 \
+    PYTHONUNBUFFERED=1 \
+    TFHUB_CACHE_DIR=/tmp/tfhub_cache \
+    TRANSFORMERS_CACHE=/tmp/transformers_cache
 
-EXPOSE 8080
+EXPOSE 7860
 
 CMD ["python", "app.py"]
 
