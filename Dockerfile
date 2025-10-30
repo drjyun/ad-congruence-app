@@ -1,12 +1,21 @@
 FROM python:3.10-slim
 
-# (Optional) system libs if you ever add OpenCV/ffmpeg; safe to omit otherwise
-# RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
+# Optional but helpful for smaller images & faster installs
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
+# Install only what's needed for the UI
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# Add app code
 COPY . .
-# Streamlit
-CMD ["bash","-lc","streamlit run app.py --server.port $PORT --server.address 0.0.0.0"]
+
+# Optional: pick a default port so it also runs locally
+ENV PORT=8080
+
+# Run Streamlit and bind to Render's provided $PORT
+CMD ["bash","-lc","streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port $PORT"]
