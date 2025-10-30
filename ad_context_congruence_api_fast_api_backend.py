@@ -372,7 +372,7 @@ def plot_both(
         ax.fill_between(x, np.array(m)-np.array(ci), np.array(m)+np.array(ci), alpha=0.2)
         ax.set_title(title)
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Fisher-z cosine similarity")
+        ax.set_ylabel("")
         ax.grid(True, alpha=.3)
 
     fig.tight_layout()
