@@ -1,15 +1,12 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-# Install ffmpeg for audio extraction
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# (Optional) system libs if you ever add OpenCV/ffmpeg; safe to omit otherwise
+# RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
-
-# Set default port for Render
-ENV PORT=8000
-CMD ["uvicorn", "ad_context_congruence_api_fast_api_backend:app", "--host", "0.0.0.0", "--port", "8000"]
+# Streamlit
+CMD ["bash","-lc","streamlit run app.py --server.port $PORT --server.address 0.0.0.0"]
