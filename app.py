@@ -357,5 +357,8 @@ with gr.Blocks(title="Ad–Context Congruence", theme=gr.themes.Soft()) as demo:
     """)
 
 if __name__ == "__main__":
-    demo.launch()
+    # Get port from environment variable (for Railway deployment)
+    import os
+    port = int(os.getenv("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port, share=False)
 
