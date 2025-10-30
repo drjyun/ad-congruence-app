@@ -194,6 +194,15 @@ def custom_openapi():
     return schema
 app.openapi=custom_openapi
 
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "service": "Ad–Context Congruence API",
+        "status": "live",
+        "docs": "https://ad-congruence-api.onrender.com/docs"
+    }
+
 if __name__=="__main__":
     import uvicorn
     uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT",8000)))
