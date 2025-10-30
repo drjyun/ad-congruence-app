@@ -1,12 +1,27 @@
-fastapi
-uvicorn[standard]
-numpy
-pillow
-requests
-transformers
-torch
-torchvision
-librosa
-tensorflow
-tensorflow-hub
+# App frameworks
+streamlit==1.37.1
+fastapi==0.115.2
+uvicorn[standard]==0.30.6
 
+# Core numerics (pin to avoid ABI mismatches)
+numpy==1.26.4
+pillow==10.4.0
+requests==2.32.3
+protobuf==3.20.3  # safer with TF/Transformers
+
+# ML stacks (pin stable CPU wheels)
+transformers==4.44.2
+
+# If truly need both TF + Torch, keep both pinned;
+# otherwise remove one to reduce build time / memory.
+#tensorflow==2.13.1
+#tensorflow-hub==0.16.1
+
+torch==2.2.2
+torchvision==0.17.2
+
+# Audio stack
+librosa==0.10.2.post1
+soundfile==0.12.1
+numba==0.58.1
+llvmlite==0.41.1
