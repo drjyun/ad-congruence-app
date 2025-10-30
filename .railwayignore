@@ -1,0 +1,18 @@
+# Don't upload these to Railway (speeds up deployment)
+.git/
+.gitattributes
+*.md
+DEPLOYMENT*.md
+OPTIMIZATION*.md
+SELF-HOSTING.md
+test_*.py
+hf_login.py
+*.bat
+Dockerfile
+Dockerfile.api
+streamlit_app.py
+ad_context_api.py
+requirements.api.txt
+runtime.txt
+packages.txt
+
