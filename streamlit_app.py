@@ -3,7 +3,8 @@ from datetime import datetime
 import pandas as pd
 
 # ===== CONFIG =====
-BASE = os.getenv("BASE_URL", "https://sitting-profits-twiki-articles.trycloudflare.com")
+#BASE = os.getenv("BASE_URL", "https://sitting-profits-twiki-articles.trycloudflare.com")
+BASE = os.getenv("BASE_URL", "https://ad-congruence-api.onrender.com")
 SHOWS = ["CNN","FOXNEWS","NFL","LEGO","PICKERS","CONTINENTAL","BIGMOOD"]
 AGGS  = ["ad_time","tv_time"]
 RANK_COMBINE = {"Combined (mean of A/V)": "mean", "Audio only": "audio", "Visual only": "visual"}
