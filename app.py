@@ -167,30 +167,63 @@ def load_context_avg_arrays(kind):
 def sliding_congruence(tv_arrays, ad_array, window_sec, step_sec, chunk_dur):
     W = max(int(round(window_sec / chunk_dur)), 1)
     S = max(int(round(step_sec / chunk_dur)), 1)
-    buf = {}
     
-    # Precompute ad windows for efficiency
-    ad_windows = []
+    # Precompute ad windows ONCE (flattened and normalized)
     ad_indices = list(sliding_indices(ad_array.shape[0], W, S))
-    for a0 in ad_indices:
-        ad_win = ad_array[a0:a0 + W].reshape(1, -1)
-        ad_win_norm = np.linalg.norm(ad_win)
-        ad_windows.append((a0, ad_win, ad_win_norm))
+    n_ad_windows = len(ad_indices)
+    
+    # Create matrix of all ad windows at once (vectorized!)
+    ad_windows_matrix = np.zeros((n_ad_windows, W * ad_array.shape[1]))
+    for i, a0 in enumerate(ad_indices):
+        ad_windows_matrix[i] = ad_array[a0:a0 + W].flatten()
+    
+    # Precompute norms for all ad windows at once
+    ad_norms = np.linalg.norm(ad_windows_matrix, axis=1, keepdims=True)
+    ad_windows_normalized = ad_windows_matrix / (ad_norms + 1e-8)
+    
+    # Store results efficiently
+    results = []
     
     for tv in tv_arrays:
         n_tv = tv.shape[0]
-        for t0 in sliding_indices(n_tv, W, S):
-            tv_win = tv[t0:t0 + W].reshape(1, -1)
-            tv_win_norm = np.linalg.norm(tv_win)
-            
-            # Vectorized computation across all ad windows
-            for a0, ad_win, ad_win_norm in ad_windows:
-                r = float((tv_win @ ad_win.T) / (tv_win_norm * ad_win_norm + 1e-8))
-                z = float(fisher_z(np.array([r]))[0])
-                buf.setdefault((t0, a0), []).append(z)
+        tv_indices = list(sliding_indices(n_tv, W, S))
+        n_tv_windows = len(tv_indices)
+        
+        # Create matrix of all TV windows at once
+        tv_windows_matrix = np.zeros((n_tv_windows, W * tv.shape[1]))
+        for i, t0 in enumerate(tv_indices):
+            tv_windows_matrix[i] = tv[t0:t0 + W].flatten()
+        
+        # Compute norms for TV windows
+        tv_norms = np.linalg.norm(tv_windows_matrix, axis=1, keepdims=True)
+        tv_windows_normalized = tv_windows_matrix / (tv_norms + 1e-8)
+        
+        # VECTORIZED: Compute ALL correlations at once (matrix multiplication)
+        # Shape: (n_tv_windows, n_ad_windows)
+        correlations = tv_windows_normalized @ ad_windows_normalized.T
+        
+        # Apply Fisher-z transformation (vectorized)
+        correlations_clipped = np.clip(correlations, -0.999999, 0.999999)
+        z_scores = 0.5 * np.log((1 + correlations_clipped) / (1 - correlations_clipped))
+        
+        # Store results for this TV segment
+        for i, t0 in enumerate(tv_indices):
+            for j, a0 in enumerate(ad_indices):
+                results.append([t0 * chunk_dur, a0 * chunk_dur, z_scores[i, j]])
     
-    rows = [[t0 * chunk_dur, a0 * chunk_dur, float(np.mean(zs))] for (t0, a0), zs in buf.items()]
-    return np.array(rows, float)
+    # Average z-scores across multiple TV segments if needed
+    if len(tv_arrays) > 1:
+        result_dict = {}
+        for t_time, a_time, z in results:
+            key = (t_time, a_time)
+            if key not in result_dict:
+                result_dict[key] = []
+            result_dict[key].append(z)
+        
+        final_results = [[t, a, float(np.mean(zs))] for (t, a), zs in result_dict.items()]
+        return np.array(final_results, float)
+    
+    return np.array(results, float)
 
 # ===== PLOTTING =====
 def create_plot(rows, show, agg, modality):
@@ -252,6 +285,9 @@ def analyze_ad(video_file, show, agg, combine_metric):
     if video_file is None:
         return None, None, "Please upload a video file.", None
     
+    import time
+    start_time = time.time()
+    
     try:
         # Create unique ID and directory
         ad_id = str(uuid.uuid4())
@@ -262,40 +298,71 @@ def analyze_ad(video_file, show, agg, combine_metric):
         video_path = os.path.join(ad_dir, "ad.mp4")
         shutil.copy(video_file, video_path)
         
-        # Extract audio
-        yield None, None, "⏳ Extracting audio...", None
+        # Extract audio (~20s)
+        yield None, None, "⏳ [1/6] Extracting audio... (est. 20s)", None
+        t1 = time.time()
         wav_path = os.path.join(ad_dir, "audio.wav")
         extract_audio_wav(video_path, wav_path)
         ad_audio = vggish_embeddings(wav_path)
+        audio_time = time.time() - t1
+        print(f"✓ Audio: {audio_time:.1f}s")
         
-        # Extract visual frames
-        yield None, None, "⏳ Extracting video frames...", None
+        # Extract visual frames (~90s - biggest bottleneck)
+        yield None, None, f"⏳ [2/6] Processing video frames... (est. 90s)", None
+        t2 = time.time()
         frames_dir = os.path.join(ad_dir, "frames")
         sample_frames(video_path, frames_dir, SAMPLE_SEC)
         ad_vis = vit_embeddings_from_frames(frames_dir)
+        visual_time = time.time() - t2
+        print(f"✓ Visual: {visual_time:.1f}s")
         
-        # Load contexts
-        yield None, None, "⏳ Loading TV context features...", None
+        # Load contexts (cached, fast)
+        yield None, None, "⏳ [3/6] Loading TV contexts...", None
         ctx_audio = load_context_avg_arrays("audio")
         ctx_vis = load_context_avg_arrays("visual")
         
-        # Calculate congruence
-        yield None, None, f"⏳ Calculating congruence for {show}...", None
+        # Calculate congruence (~30s with vectorization)
+        yield None, None, f"⏳ [4/6] Computing congruence for {show}... (est. 30s)", None
+        t3 = time.time()
         rows_a = sliding_congruence(ctx_audio[show], ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
         rows_v = sliding_congruence(ctx_vis[show], ad_vis, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+        selected_time = time.time() - t3
+        print(f"✓ Selected show: {selected_time:.1f}s")
         
         # Create plot
-        yield None, None, "⏳ Generating visualization...", None
+        yield None, None, "⏳ [5/6] Creating visualization...", None
         plot = create_combined_plot(rows_a, rows_v, show, agg)
         
-        # Calculate rankings for all shows
-        yield None, None, "⏳ Ranking all shows...", None
+        # Calculate rankings for all shows (~150s for 6 remaining shows)
+        # OPTIMIZATION: Reuse already computed results for selected show!
+        yield None, None, "⏳ [6/6] Ranking all shows... (est. 150s)", None
+        t4 = time.time()
         rankings = []
-        for s in CONTEXT_SHOWS:
+        
+        # Create a cache to store computed results
+        congruence_cache = {
+            show: {'audio': rows_a, 'visual': rows_v}  # Reuse selected show results!
+        }
+        
+        remaining_shows = [s for s in CONTEXT_SHOWS if s != show and s in ctx_audio and s in ctx_vis]
+        for idx, s in enumerate(CONTEXT_SHOWS):
             if s not in ctx_audio or s not in ctx_vis:
                 continue
-            Ra = sliding_congruence(ctx_audio[s], ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
-            Rv = sliding_congruence(ctx_vis[s], ad_vis, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+            
+            # Show progress for each show
+            if s != show:
+                progress_pct = int((idx / len(CONTEXT_SHOWS)) * 100)
+                yield None, None, f"⏳ [6/6] Ranking shows... {progress_pct}% ({s})", None
+            
+            # Check if we already computed this show
+            if s in congruence_cache:
+                Ra = congruence_cache[s]['audio']
+                Rv = congruence_cache[s]['visual']
+            else:
+                # Only compute if not already done
+                Ra = sliding_congruence(ctx_audio[s], ad_audio, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+                Rv = sliding_congruence(ctx_vis[s], ad_vis, WINDOW_SEC, STEP_SEC, SAMPLE_SEC)
+            
             mean_a = float(np.mean(Ra[:, 2])) if Ra.size else float("nan")
             mean_v = float(np.mean(Rv[:, 2])) if Rv.size else float("nan")
             
@@ -313,16 +380,27 @@ def analyze_ad(video_file, show, agg, combine_metric):
                 "Visual": round(mean_v, 3)
             })
         
+        ranking_time = time.time() - t4
+        print(f"✓ Ranking: {ranking_time:.1f}s")
+        
         df = pd.DataFrame(rankings)
         df = df.sort_values(by="Audio" if combine_metric == "Audio only" 
                             else "Visual" if combine_metric == "Visual only" 
                             else "Combined", ascending=False)
+        
+        total_time = time.time() - start_time
         
         info_text = f"""
 ### Analysis Complete ✓
 **Ad ID:** `{ad_id}`
 **TV Show:** {show}
 **Aggregation:** {agg}
+**Total Time:** {total_time:.1f}s ({total_time/60:.1f} min)
+**Breakdown:**
+- Audio processing: {audio_time:.1f}s
+- Visual processing: {visual_time:.1f}s
+- Congruence (selected): {selected_time:.1f}s
+- Ranking all shows: {ranking_time:.1f}s
 **Analyzed at:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 Higher Fisher-z scores indicate better congruence between your ad and the TV context.
@@ -331,6 +409,9 @@ Higher Fisher-z scores indicate better congruence between your ad and the TV con
         yield plot, df, info_text, ad_dir
         
     except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        print(f"❌ Error:\n{error_msg}")
         yield None, None, f"❌ Error: {str(e)}", None
 
 # ===== GRADIO INTERFACE =====
