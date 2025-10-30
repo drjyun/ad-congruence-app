@@ -49,6 +49,8 @@ def get_vggish():
     global vggish
     if vggish is None:
         print("Loading VGGish from TF-Hub…")
+        # Set cache directory to persist models
+        os.environ['TFHUB_CACHE_DIR'] = '/tmp/tfhub_cache'
         vggish = hub.load("https://tfhub.dev/google/vggish/1")
         print("VGGish ready.")
     return vggish
@@ -57,8 +59,11 @@ def get_vit():
     global vit, fe, transform
     if vit is None:
         print("Loading ViT…")
+        # Cache HuggingFace models
+        os.environ['TRANSFORMERS_CACHE'] = '/tmp/transformers_cache'
         fe = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
         vit = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k").to(device)
+        vit.eval()  # Set to evaluation mode for speed
         from torchvision import transforms
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -89,7 +94,7 @@ def sample_frames(video_path, out_dir, sample_sec=0.96):
     subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps}", pattern],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def vit_embeddings_from_frames(frame_dir, batch_size=8):
+def vit_embeddings_from_frames(frame_dir, batch_size=16):  # Increased batch size
     vit_model, fe_proc, tfm = get_vit()
     frames = sorted(glob.glob(os.path.join(frame_dir, "frame_*.jpg")))
     if not frames:
@@ -103,7 +108,8 @@ def vit_embeddings_from_frames(frame_dir, batch_size=8):
         def __getitem__(self, i):
             return tfm(Image.open(self.paths[i]).convert("RGB"))
 
-    dl = DataLoader(FrameDataset(frames), batch_size=batch_size, shuffle=False)
+    dl = DataLoader(FrameDataset(frames), batch_size=batch_size, shuffle=False, 
+                    num_workers=0, pin_memory=False)  # Optimized for CPU
     feats = []
     vit_model.eval()
     with torch.no_grad():
@@ -114,10 +120,23 @@ def vit_embeddings_from_frames(frame_dir, batch_size=8):
     return np.vstack(feats)
 
 # ===== CONTEXT LOADING =====
+# Cache context arrays globally (load once, reuse)
+_cached_audio_ctx = None
+_cached_visual_ctx = None
+
 def load_context_avg_arrays(kind):
+    global _cached_audio_ctx, _cached_visual_ctx
+    
+    # Return cached if available
+    if kind == "audio" and _cached_audio_ctx is not None:
+        return _cached_audio_ctx
+    if kind == "visual" and _cached_visual_ctx is not None:
+        return _cached_visual_ctx
+    
     # Check both subdirectory and root directory for feature files
     d = AUDIO_DIR if kind == "audio" else VISUAL_DIR
     out = {}
+    print(f"Loading {kind} context features...")
     for show in CONTEXT_SHOWS:
         pattern = f"{show}_*_features.npy" if kind == "audio" else f"{show}_*_sampled_960ms_features.npy"
         
@@ -131,8 +150,17 @@ def load_context_avg_arrays(kind):
         arrs = [np.load(p) for p in segs]
         if arrs:
             out[show] = arrs
+    
     if not out:
         raise RuntimeError(f"No context features for {kind}. Searched in {d} and {DATA_ROOT}")
+    
+    # Cache for future use
+    if kind == "audio":
+        _cached_audio_ctx = out
+    else:
+        _cached_visual_ctx = out
+    
+    print(f"✓ Loaded {len(out)} {kind} contexts")
     return out
 
 # ===== CONGRUENCE CALCULATION =====
@@ -140,15 +168,27 @@ def sliding_congruence(tv_arrays, ad_array, window_sec, step_sec, chunk_dur):
     W = max(int(round(window_sec / chunk_dur)), 1)
     S = max(int(round(step_sec / chunk_dur)), 1)
     buf = {}
+    
+    # Precompute ad windows for efficiency
+    ad_windows = []
+    ad_indices = list(sliding_indices(ad_array.shape[0], W, S))
+    for a0 in ad_indices:
+        ad_win = ad_array[a0:a0 + W].reshape(1, -1)
+        ad_win_norm = np.linalg.norm(ad_win)
+        ad_windows.append((a0, ad_win, ad_win_norm))
+    
     for tv in tv_arrays:
         n_tv = tv.shape[0]
         for t0 in sliding_indices(n_tv, W, S):
             tv_win = tv[t0:t0 + W].reshape(1, -1)
-            for a0 in sliding_indices(ad_array.shape[0], W, S):
-                ad_win = ad_array[a0:a0 + W].reshape(1, -1)
-                r = float((tv_win @ ad_win.T) / (np.linalg.norm(tv_win) * np.linalg.norm(ad_win) + 1e-8))
+            tv_win_norm = np.linalg.norm(tv_win)
+            
+            # Vectorized computation across all ad windows
+            for a0, ad_win, ad_win_norm in ad_windows:
+                r = float((tv_win @ ad_win.T) / (tv_win_norm * ad_win_norm + 1e-8))
                 z = float(fisher_z(np.array([r]))[0])
                 buf.setdefault((t0, a0), []).append(z)
+    
     rows = [[t0 * chunk_dur, a0 * chunk_dur, float(np.mean(zs))] for (t0, a0), zs in buf.items()]
     return np.array(rows, float)
 
@@ -356,7 +396,38 @@ with gr.Blocks(title="Ad–Context Congruence", theme=gr.themes.Soft()) as demo:
     **Higher scores = Better match between ad and TV context**
     """)
 
+# ===== PRELOAD MODELS & DATA (Speed up first request) =====
+def preload_models_and_data():
+    """Warm up models and load context data at startup"""
+    print("\n" + "="*60)
+    print("🚀 Preloading models and data for faster response...")
+    print("="*60)
+    
+    try:
+        # Preload models
+        print("📥 Loading VGGish model...")
+        get_vggish()
+        
+        print("📥 Loading ViT model...")
+        get_vit()
+        
+        # Preload context arrays
+        print("📥 Loading audio context features...")
+        load_context_avg_arrays("audio")
+        
+        print("📥 Loading visual context features...")
+        load_context_avg_arrays("visual")
+        
+        print("="*60)
+        print("✅ All models and data loaded! Ready for requests.")
+        print("="*60 + "\n")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not preload all resources: {e}")
+
 if __name__ == "__main__":
+    # Preload everything before starting server
+    preload_models_and_data()
+    
     # Get port from environment variable (for Railway deployment)
     import os
     port = int(os.getenv("PORT", 7860))
