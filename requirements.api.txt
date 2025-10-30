@@ -1,0 +1,25 @@
+# --- API (FastAPI + ML) ---
+fastapi==0.115.2
+uvicorn[standard]==0.30.6
+
+# Core utils
+requests==2.32.3
+pillow==10.4.0
+protobuf==3.20.3
+
+# Deep learning
+tensorflow==2.13.1
+tensorflow-hub==0.16.1
+numpy==1.24.4
+matplotlib==3.9.2
+
+# PyTorch / ViT
+torch==2.2.2
+torchvision==0.17.2
+transformers==4.44.2
+
+# Audio stack
+librosa==0.10.2.post1
+soundfile==0.12.1
+numba==0.58.1
+llvmlite==0.41.1
