@@ -135,7 +135,7 @@ def test_equivalence():
     
     diff_1 = np.max(np.abs(result_orig_1 - result_opt_1))
     print(f"  Max absolute difference: {diff_1:.2e}")
-    print(f"  ✓ Results equal (tol=1e-10): {np.allclose(result_orig_1, result_opt_1, atol=1e-10)}")
+    print(f"  [OK] Results equal (tol=1e-10): {np.allclose(result_orig_1, result_opt_1, atol=1e-10)}")
     
     # Test Case 2: Multiple TV segments (tests averaging logic)
     print("\n[Test 2] Multiple TV segments")
@@ -152,7 +152,7 @@ def test_equivalence():
     
     diff_2 = np.max(np.abs(result_orig_2 - result_opt_2))
     print(f"  Max absolute difference: {diff_2:.2e}")
-    print(f"  ✓ Results equal (tol=1e-10): {np.allclose(result_orig_2, result_opt_2, atol=1e-10)}")
+    print(f"  [OK] Results equal (tol=1e-10): {np.allclose(result_orig_2, result_opt_2, atol=1e-10)}")
     
     # Test Case 3: Different parameters
     print("\n[Test 3] Different window parameters")
@@ -168,7 +168,7 @@ def test_equivalence():
     
     diff_3 = np.max(np.abs(result_orig_3 - result_opt_3))
     print(f"  Max absolute difference: {diff_3:.2e}")
-    print(f"  ✓ Results equal (tol=1e-10): {np.allclose(result_orig_3, result_opt_3, atol=1e-10)}")
+    print(f"  [OK] Results equal (tol=1e-10): {np.allclose(result_orig_3, result_opt_3, atol=1e-10)}")
     
     # Test Case 4: Real-world size (similar to actual usage)
     print("\n[Test 4] Real-world size (30s video)")
@@ -187,13 +187,13 @@ def test_equivalence():
     time_opt = time.time() - t0
     
     diff_4 = np.max(np.abs(result_orig_4 - result_opt_4))
-    speedup = time_orig / time_opt
+    speedup = time_orig / time_opt if time_opt > 0 else float('inf')
     
     print(f"  Original time: {time_orig*1000:.2f}ms")
     print(f"  Optimized time: {time_opt*1000:.2f}ms")
-    print(f"  Speedup: {speedup:.1f}x")
+    print(f"  Speedup: {speedup:.1f}x" if speedup < 1000 else f"  Speedup: >{speedup/10:.0f}x")
     print(f"  Max absolute difference: {diff_4:.2e}")
-    print(f"  ✓ Results equal (tol=1e-10): {np.allclose(result_orig_4, result_opt_4, atol=1e-10)}")
+    print(f"  [OK] Results equal (tol=1e-10): {np.allclose(result_orig_4, result_opt_4, atol=1e-10)}")
     
     # Final Summary
     print("\n" + "="*70)
@@ -208,15 +208,15 @@ def test_equivalence():
     ])
     
     if all_close:
-        print("✅ ALL TESTS PASSED")
-        print("✅ Optimized version produces IDENTICAL results to original")
-        print(f"✅ Speedup achieved: ~{speedup:.1f}x")
+        print("[PASS] ALL TESTS PASSED")
+        print("[PASS] Optimized version produces IDENTICAL results to original")
+        print(f"[PASS] Speedup achieved: ~{speedup:.1f}x")
         print("\nCONCLUSION: The optimization preserves the original algorithm logic.")
-        print("Same input → Same output. Only the computation method changed.")
+        print("Same input -> Same output. Only the computation method changed.")
         return 0
     else:
-        print("❌ TESTS FAILED")
-        print("❌ Results differ beyond floating-point tolerance")
+        print("[FAIL] TESTS FAILED")
+        print("[FAIL] Results differ beyond floating-point tolerance")
         return 1
 
 if __name__ == "__main__":
