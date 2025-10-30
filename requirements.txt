@@ -6,3 +6,7 @@ requests
 transformers
 torch
 torchvision
+librosa
+tensorflow
+tensorflow-hub
+
